@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: devops-lab
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels: { app: devops-lab }
+  template:
+    metadata:
+      labels: { app: devops-lab }
+    spec:
+      containers:
+        - name: app
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8000
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            initialDelaySeconds: 10
+            periodSeconds: 10

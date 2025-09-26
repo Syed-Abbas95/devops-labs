@@ -1,0 +1,19 @@
+image:
+  repository: devops-lab
+  tag: "local"
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: dev.local.test
+      paths:
+        - path: /
+          pathType: Prefix
