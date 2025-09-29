@@ -34,9 +34,12 @@ jobs:
           for i in {1..30}; do curl -fsS http://localhost:8000/healthz && break; sleep 1; done
 
       - name: Run pytest against service
+        env:
+          APP_URL: http://localhost:8000
         run: |
-          python3 -m pip install --user pytest requests
-          APP_URL=http://localhost:8000/healthz python3 -m pytest -q
+          python -m pip install --upgrade pip
+          python -m pip install pytest requests
+          python -m pytest -q
 
       - name: Stop container
         if: always()
