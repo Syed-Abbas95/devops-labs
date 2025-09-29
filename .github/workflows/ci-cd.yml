@@ -1,0 +1,88 @@
+name: ci-cd
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: devops-labs
+  REGISTRY: ghcr.io
+  REPO: ${{ github.repository_owner }}/devops-labs
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (load locally for tests)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          tags: ${{ env.IMAGE_NAME }}:test
+          load: true
+
+      - name: Run container under test
+        run: |
+          docker run -d --rm -p 8000:8000 --name sut ${{ env.IMAGE_NAME }}:test
+          for i in {1..30}; do curl -fsS http://localhost:8000/healthz && break; sleep 1; done
+
+      - name: Run pytest against service
+        run: |
+          python3 -m pip install --user pytest requests
+          APP_URL=http://localhost:8000/healthz python3 -m pytest -q
+
+      - name: Stop container
+        if: always()
+        run: docker stop sut || true
+
+      - name: Trivy scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:test
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: vars
+        run: |
+          echo "TAG_SHA=${GITHUB_SHA}" >> $GITHUB_OUTPUT
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            echo "TAG_LATEST=latest" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build & push multi-arch (amd64+arm64)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.REPO }}:${{ steps.vars.outputs.TAG_SHA }}
+            ${{ env.REGISTRY }}/${{ env.REPO }}:${{ steps.vars.outputs.TAG_LATEST }}
