@@ -10,7 +10,8 @@ on:
 env:
   IMAGE_NAME: devops-labs
   REGISTRY: ghcr.io
-  REPO: ${{ github.repository_owner }}/devops-labs
+  # GHCR requires lowercase path; ensure repo path is lowercase.
+  REPO: ${{ toLower(github.repository) }}
 
 jobs:
   test:
@@ -18,28 +19,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python (for pytest)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (load locally for tests)
-        uses: docker/build-push-action@v5
+      - name: Build image (load locally for tests; with cache)
+        uses: docker/build-push-action@v6
         with:
           context: .
           tags: ${{ env.IMAGE_NAME }}:test
           load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Run container under test
+      - name: Run container under test on 8080
+        run: docker run -d --rm -p 8080:8000 --name sut ${{ env.IMAGE_NAME }}:test
+
+      - name: Probe endpoints (debug)
         run: |
-          docker run -d --rm -p 8000:8000 --name sut ${{ env.IMAGE_NAME }}:test
-          for i in {1..30}; do curl -fsS http://localhost:8000/healthz && break; sleep 1; done
+          set -x
+          sleep 2
+          curl -i http://localhost:8080/healthz || true
+          curl -i http://localhost:8080/health  || true
+
+      - name: Wait for readiness on /healthz (30s)
+        run: |
+          set -e
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8080/healthz >/dev/null; then
+              echo "Service is ready"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Service never returned 200 on /healthz" >&2
+          exit 1
 
       - name: Run pytest against service
         env:
-          APP_URL: http://localhost:8000
+          APP_URL: http://localhost:8080
         run: |
           python -m pip install --upgrade pip
           python -m pip install pytest requests
           python -m pytest -q
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker logs sut || true
 
       - name: Stop container
         if: always()
@@ -58,10 +87,13 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -72,20 +104,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tags
-        id: vars
-        run: |
-          echo "TAG_SHA=${GITHUB_SHA}" >> $GITHUB_OUTPUT
-          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            echo "TAG_LATEST=latest" >> $GITHUB_OUTPUT
-          fi
+      - name: Docker meta (labels + tags)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.REPO }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build & push multi-arch (amd64+arm64)
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.REPO }}:${{ steps.vars.outputs.TAG_SHA }}
-            ${{ env.REGISTRY }}/${{ env.REPO }}:${{ steps.vars.outputs.TAG_LATEST }}
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
